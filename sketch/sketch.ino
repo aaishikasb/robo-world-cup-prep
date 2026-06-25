@@ -38,7 +38,6 @@ const uint8_t MOTOR_PWM_MIN = 2;
 const int MAX_DRIVE_MS = 5000;
 const int DEFAULT_PULSE_MS = 700;
 const int DEFAULT_SPEED = 180;
-
 // Observed with UNO Q on this miniAuto:
 // sketch M0/PWM D10 -> board connector M3, forward only with current DIR map
 // sketch M1/PWM D9  -> board connector M2, backward only with current DIR map
