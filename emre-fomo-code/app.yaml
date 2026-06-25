@@ -1,0 +1,6 @@
+name: AI LA RoboCup
+description: Hiwonder miniAuto UNO Q App Lab project for simple Bridge-driven robot motion.
+ports: []
+bricks:
+- arduino:web_ui: {}
+icon: 🚗

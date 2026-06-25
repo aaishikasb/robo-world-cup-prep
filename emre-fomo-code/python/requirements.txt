@@ -1,0 +1,6 @@
+ai-edge-litert==2.1.2
+numpy
+pillow
+requests
+edge-impulse-linux
+edge_impulse_linux
