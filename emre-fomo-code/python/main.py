@@ -67,6 +67,10 @@ BALL_LOST_VECTOR_X_DEADBAND = int(os.getenv("ROBOCUP_LOST_VECTOR_X_DEADBAND", "1
 SEARCH_TURN_SPEED = int(os.getenv("ROBOCUP_SEARCH_SPEED", "95"))
 SEARCH_TURN_MS = int(os.getenv("ROBOCUP_SEARCH_MS", "440"))
 SEARCH_SWEEP_SECONDS = float(os.getenv("ROBOCUP_SEARCH_SWEEP", "1.5"))
+SEEK_TURN_DISTANCE_SCALE = float(os.getenv("ROBOCUP_SEEK_TURN_DISTANCE_SCALE", "2.0"))
+SEARCH_RUNS_BEFORE_UTURN = int(os.getenv("ROBOCUP_SEARCH_RUNS_BEFORE_UTURN", "3"))
+SEARCH_UTURN_SPEED = int(os.getenv("ROBOCUP_SEARCH_UTURN_SPEED", "120"))
+SEARCH_UTURN_MS = int(os.getenv("ROBOCUP_SEARCH_UTURN_MS", "900"))
 SEARCH_WIDE_TURN_SPEED = int(os.getenv("ROBOCUP_SEARCH_WIDE_SPEED", "110"))
 SEARCH_WIDE_TURN_MS = int(os.getenv("ROBOCUP_SEARCH_WIDE_MS", "340"))
 SEARCH_FORWARD_SPEED = int(os.getenv("ROBOCUP_SEARCH_FORWARD_SPEED", "170"))
@@ -111,6 +115,7 @@ _last_detect_log_at = 0.0
 _robot_mode = "idle"
 _search_direction = 1
 _last_search_switch_at = 0.0
+_search_half_cycles = 0
 _last_search_forward_at = 0.0
 _last_preview_submit_at = 0.0
 _last_preview_encoded_seq = -1
@@ -157,6 +162,14 @@ def _drive_with_rate_limit(command: str, speed: int, ms: int) -> None:
         return
     robot.drive(command, speed, ms)
     _last_command_at = now
+
+
+def _seek_turn(command: str, speed: int, ms: int) -> None:
+    """Turn farther during seek modes by scaling both speed and pulse duration."""
+    scale = max(1.0, SEEK_TURN_DISTANCE_SCALE)
+    scaled_speed = int(min(255, max(0, speed * scale)))
+    scaled_ms = int(max(1, ms * scale))
+    _drive_with_rate_limit(command, scaled_speed, scaled_ms)
 
 
 def _drive_backward_diagonal(direction: int, speed: int, ms: int) -> None:
@@ -424,7 +437,7 @@ def ball_quadrant(center_x: float, center_y: float, frame_width: int, frame_heig
 
 def react_to_detections(summary: dict) -> None:
     global _last_ball_seen_at, _last_ball_center_x, _search_direction, _last_search_switch_at
-    global _last_search_forward_at
+    global _last_search_forward_at, _search_half_cycles
     global _last_ball_quadrant
     global _recovery_mode_active, _recovery_phase_direction
     global _ball_center_x_ema, _ball_center_y_ema, _ball_area_ema
@@ -549,9 +562,9 @@ def react_to_detections(summary: dict) -> None:
         if abs(x_error_pred) <= BALL_LOST_VECTOR_X_DEADBAND:
             _drive_with_rate_limit("forward", BALL_LOST_VECTOR_FORWARD_SPEED, BALL_LOST_VECTOR_FORWARD_MS)
         elif x_error_pred < 0:
-            _drive_with_rate_limit("left", BALL_LOST_VECTOR_TURN_SPEED, BALL_LOST_VECTOR_TURN_MS)
+            _seek_turn("left", BALL_LOST_VECTOR_TURN_SPEED, BALL_LOST_VECTOR_TURN_MS)
         else:
-            _drive_with_rate_limit("right", BALL_LOST_VECTOR_TURN_SPEED, BALL_LOST_VECTOR_TURN_MS)
+            _seek_turn("right", BALL_LOST_VECTOR_TURN_SPEED, BALL_LOST_VECTOR_TURN_MS)
 
         _set_robot_mode("vector", "[ROBOT] ball lost - vector pursuit")
         return
@@ -566,15 +579,25 @@ def react_to_detections(summary: dict) -> None:
         else:
             _search_direction = 1
         _last_search_switch_at = now
+        _search_half_cycles = 0
     elif now - _last_search_switch_at >= SEARCH_SWEEP_SECONDS:
         _search_direction *= -1
         _last_search_switch_at = now
+        _search_half_cycles += 1
+
+        # One complete run is a left-right pair (two half-cycles).
+        if _search_half_cycles >= (SEARCH_RUNS_BEFORE_UTURN * 2):
+            _drive_with_rate_limit("right", SEARCH_UTURN_SPEED, SEARCH_UTURN_MS)
+            _search_half_cycles = 0
+            _search_direction *= -1
+            _set_robot_mode("uturn", "[ROBOT] search cycles complete - 180 turn")
+            return
 
     # Once missing longer, recover with gentle sweep (toned down strafing).
     if _search_direction < 0:
-        _drive_with_rate_limit("left", SEARCH_TURN_SPEED, SEARCH_TURN_MS)
+        _seek_turn("left", SEARCH_TURN_SPEED, SEARCH_TURN_MS)
     else:
-        _drive_with_rate_limit("right", SEARCH_TURN_SPEED, SEARCH_TURN_MS)
+        _seek_turn("right", SEARCH_TURN_SPEED, SEARCH_TURN_MS)
 
     _set_robot_mode("search", "[ROBOT] ball lost - searching")
 
