@@ -13,9 +13,7 @@ class MiniAutoRobot:
 
     def read_sensors(self) -> dict[str, Any]:
         raw = Bridge.call("read_sensors")
-        if not raw:
-            return {}
-        return json.loads(raw)
+        return json.loads(raw) if raw else {}
 
     def servo(self, angle: int) -> bool:
         return bool(Bridge.call("servo", int(angle)))
@@ -31,6 +29,4 @@ class MiniAutoRobot:
 
     def health(self) -> dict[str, Any]:
         raw = Bridge.call("health")
-        if not raw:
-            return {}
-        return json.loads(raw)
+        return json.loads(raw) if raw else {}

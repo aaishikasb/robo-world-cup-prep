@@ -1,17 +1,18 @@
 import base64
 import io
 import os
-import requests
 import stat
 import threading
 import time
 
 from pathlib import Path
+
+import numpy as np
+import requests
 from arduino.app_utils import App
 from arduino.app_bricks.web_ui import WebUI
 from edge_impulse_linux.image import ImageImpulseRunner
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
 
 from robot_client import MiniAutoRobot
 
@@ -30,13 +31,10 @@ DETECT_LOG_INTERVAL_SECONDS = float(os.getenv("ROBOCUP_DETECT_LOG_EVERY", "0.35"
 
 BALL_LABEL = os.getenv("ROBOCUP_BALL_LABEL", "soccer_ball")
 BALL_DRIVE_SPEED = int(os.getenv("ROBOCUP_DRIVE_SPEED", "155"))
-BALL_TURN_SPEED = int(os.getenv("ROBOCUP_TURN_SPEED", "120"))
 BALL_DRIVE_MS = int(os.getenv("ROBOCUP_DRIVE_MS", "200"))
 BALL_CHARGE_MS = int(os.getenv("ROBOCUP_CHARGE_MS", str(BALL_DRIVE_MS * 2)))
 BALL_CENTER_DEADBAND = int(os.getenv("ROBOCUP_CENTER_DEADBAND", "8"))
 BALL_CENTER_BIAS_PX = int(os.getenv("ROBOCUP_CENTER_BIAS_PX", "0"))
-BALL_CHARGE_DEADBAND = int(os.getenv("ROBOCUP_CHARGE_DEADBAND", "18"))
-BALL_CORRECTION_MS = int(os.getenv("ROBOCUP_CORRECTION_MS", "120"))
 BALL_CHARGE_SPEED_NEAR = int(os.getenv("ROBOCUP_CHARGE_SPEED_NEAR", "150"))
 BALL_CHARGE_SPEED_MID = int(os.getenv("ROBOCUP_CHARGE_SPEED_MID", "170"))
 BALL_CHARGE_SPEED_FAR = int(os.getenv("ROBOCUP_CHARGE_SPEED_FAR", "190"))
@@ -67,16 +65,10 @@ BALL_LOST_VECTOR_X_DEADBAND = int(os.getenv("ROBOCUP_LOST_VECTOR_X_DEADBAND", "1
 SEARCH_TURN_SPEED = int(os.getenv("ROBOCUP_SEARCH_SPEED", "95"))
 SEARCH_TURN_MS = int(os.getenv("ROBOCUP_SEARCH_MS", "440"))
 SEARCH_SWEEP_SECONDS = float(os.getenv("ROBOCUP_SEARCH_SWEEP", "1.5"))
-SEARCH_WIDE_TURN_SPEED = int(os.getenv("ROBOCUP_SEARCH_WIDE_SPEED", "110"))
-SEARCH_WIDE_TURN_MS = int(os.getenv("ROBOCUP_SEARCH_WIDE_MS", "340"))
-SEARCH_FORWARD_SPEED = int(os.getenv("ROBOCUP_SEARCH_FORWARD_SPEED", "170"))
-SEARCH_FORWARD_MS = int(os.getenv("ROBOCUP_SEARCH_FORWARD_MS", "260"))
-SEARCH_FORWARD_INTERVAL_SECONDS = float(os.getenv("ROBOCUP_SEARCH_FORWARD_INTERVAL", "0.85"))
-SEARCH_FORWARD_INTERVAL_TOP_SECONDS = float(os.getenv("ROBOCUP_SEARCH_FORWARD_INTERVAL_TOP", "0.55"))
-SEARCH_FORWARD_INTERVAL_BOTTOM_SECONDS = float(os.getenv("ROBOCUP_SEARCH_FORWARD_INTERVAL_BOTTOM", "1.15"))
 
 COMMAND_MIN_INTERVAL_SECONDS = float(os.getenv("ROBOCUP_COMMAND_MIN_INTERVAL", "0.05"))
 FALLBACK_FRAME_WIDTH = int(os.getenv("ROBOCUP_FALLBACK_WIDTH", "96"))
+SENSOR_POLL_INTERVAL_SECONDS = 0.05
 
 NO_BALL_RECOVERY_SECONDS = float(os.getenv("ROBOCUP_NO_BALL_RECOVERY_SECONDS", "20"))
 RECOVERY_ZIGZAG_SPEED = int(os.getenv("ROBOCUP_RECOVERY_ZIGZAG_SPEED", "255"))
@@ -109,9 +101,9 @@ _last_ball_quadrant = None
 _last_command_at = 0.0
 _last_detect_log_at = 0.0
 _robot_mode = "idle"
+_program_enabled = True
 _search_direction = 1
 _last_search_switch_at = 0.0
-_last_search_forward_at = 0.0
 _last_preview_submit_at = 0.0
 _last_preview_encoded_seq = -1
 _recovery_mode_active = False
@@ -123,20 +115,13 @@ _ball_area_ema = None
 _commit_until = 0.0
 _last_correction_at = 0.0
 _last_ball_center_x_sample = None
-_last_ball_center_y_sample = None
 _last_ball_sample_at = 0.0
 _ball_vx_ema = 0.0
-_ball_vy_ema = 0.0
+_last_sensor_poll_at = 0.0
 
 
 def resolve_web_assets_dir() -> Path | None:
-    """Return a directory containing index.html for WebUI, if available."""
-    candidates = [
-        PROJECT_FOLDER / "assets",
-        PROJECT_FOLDER,
-    ]
-
-    for candidate in candidates:
+    for candidate in (PROJECT_FOLDER / "assets", PROJECT_FOLDER):
         if (candidate / "index.html").exists():
             return candidate
 
@@ -160,14 +145,11 @@ def _drive_with_rate_limit(command: str, speed: int, ms: int) -> None:
 
 
 def _drive_backward_diagonal(direction: int, speed: int, ms: int) -> None:
-    """Drive diagonally backward; direction -1=back-left, +1=back-right."""
     s = max(0, min(255, int(speed)))
 
     if direction < 0:
-        # back-left for mecanum: rear-right + front-left stop, opposite pair reverse
         robot.drive_raw(0, -s, -s, 0, int(ms))
     else:
-        # back-right for mecanum
         robot.drive_raw(-s, 0, 0, -s, int(ms))
 
 
@@ -180,6 +162,28 @@ def _start_recovery_phase(direction: int) -> None:
     _last_command_at = now
     _recovery_phase_direction = direction
     _recovery_phase_started_at = now
+
+
+def _poll_program_enabled() -> None:
+    global _last_sensor_poll_at, _program_enabled
+
+    now = time.monotonic()
+    if now - _last_sensor_poll_at < SENSOR_POLL_INTERVAL_SECONDS:
+        return
+    _last_sensor_poll_at = now
+
+    sensors = robot.read_sensors()
+    enabled = bool(sensors.get("program_enabled", True))
+    if enabled == _program_enabled:
+        return
+
+    _program_enabled = enabled
+    if _program_enabled:
+        _set_robot_mode("idle", "[ROBOT] Modulino A - program on")
+        return
+
+    robot.stop()
+    _set_robot_mode("paused", "[ROBOT] Modulino A - program off")
 
 
 def _ema(previous: float | None, value: float, alpha: float) -> float:
@@ -424,13 +428,12 @@ def ball_quadrant(center_x: float, center_y: float, frame_width: int, frame_heig
 
 def react_to_detections(summary: dict) -> None:
     global _last_ball_seen_at, _last_ball_center_x, _search_direction, _last_search_switch_at
-    global _last_search_forward_at
     global _last_ball_quadrant
     global _recovery_mode_active, _recovery_phase_direction
     global _ball_center_x_ema, _ball_center_y_ema, _ball_area_ema
     global _commit_until, _last_correction_at
-    global _last_ball_center_x_sample, _last_ball_center_y_sample, _last_ball_sample_at
-    global _ball_vx_ema, _ball_vy_ema
+    global _last_ball_center_x_sample, _last_ball_sample_at
+    global _ball_vx_ema
 
     now = time.monotonic()
     frame_width = int(summary.get("frame_width", FALLBACK_FRAME_WIDTH))
@@ -440,7 +443,6 @@ def react_to_detections(summary: dict) -> None:
     ball = best_ball_detection(summary)
     opponent = best_detection_for_label(summary, OPPONENT_LABEL)
 
-    # Ball-visible behavior is fully vision-driven.
     if ball is not None:
         _recovery_mode_active = False
 
@@ -460,15 +462,11 @@ def react_to_detections(summary: dict) -> None:
         _last_ball_center_x = center_x_s
         _last_ball_quadrant = ball_quadrant(center_x_s, center_y_s, frame_width, frame_height)
 
-        # Track last observed image-space motion vector for short-term pursuit when ball is lost.
         if _last_ball_sample_at > 0:
             dt = max(1e-3, now - _last_ball_sample_at)
             raw_vx = (center_x_s - _last_ball_center_x_sample) / dt
-            raw_vy = (center_y_s - _last_ball_center_y_sample) / dt
             _ball_vx_ema = _ema(_ball_vx_ema, raw_vx, BALL_VECTOR_ALPHA)
-            _ball_vy_ema = _ema(_ball_vy_ema, raw_vy, BALL_VECTOR_ALPHA)
         _last_ball_center_x_sample = center_x_s
-        _last_ball_center_y_sample = center_y_s
         _last_ball_sample_at = now
 
         if ball_area_s < BALL_AREA_FAR:
@@ -489,13 +487,11 @@ def react_to_detections(summary: dict) -> None:
                 else:
                     x_error += OPPONENT_AVOID_BIAS_PX
 
-        # Commit shot: when ball is close and centered, ignore minor jitter and drive through.
         if now < _commit_until and ball_area_s >= BALL_AREA_NEAR:
             _drive_with_rate_limit("forward", BALL_COMMIT_SPEED, BALL_COMMIT_MS)
             _set_robot_mode("commit", "[ROBOT] ball detected - commit drive")
             return
 
-        # Center first with short, gentle corrections; otherwise barrel forward.
         if abs(x_error) > BALL_ALIGN_DEADBAND and (now - _last_correction_at) >= BALL_CORRECTION_COOLDOWN_SECONDS:
             if x_error < 0:
                 _drive_with_rate_limit("left", BALL_ALIGN_TURN_SPEED, BALL_ALIGN_TURN_MS)
@@ -570,7 +566,6 @@ def react_to_detections(summary: dict) -> None:
         _search_direction *= -1
         _last_search_switch_at = now
 
-    # Once missing longer, recover with gentle sweep (toned down strafing).
     if _search_direction < 0:
         _drive_with_rate_limit("left", SEARCH_TURN_SPEED, SEARCH_TURN_MS)
     else:
@@ -602,6 +597,12 @@ def run_inference(frame: Image.Image):
 
 
 def loop() -> None:
+    _poll_program_enabled()
+
+    if not _program_enabled:
+        time.sleep(LOOP_DELAY_SECONDS)
+        return
+
     frame, frame_seq = copy_current_image()
 
     if frame is None:

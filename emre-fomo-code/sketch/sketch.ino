@@ -1,19 +1,8 @@
-/*
-  Hiwonder miniAuto control sketch.
-
-  Hardware facts are from Hiwonder's miniAuto examples:
-  - Motor PWM pins: D10, D9, D6, D11
-  - Motor direction pins: D12, D8, D7, D13
-  - Onboard WS2812 RGB data: D2
-  - Passive buzzer: D3
-  - Servo/gripper: D5
-  - Battery divider: A3
-  - Glowing ultrasonic sensor: I2C 0x77, distance in millimeters
-  - 4-channel line sensor: I2C 0x78, line bits in register 1
-*/
+// Hiwonder miniAuto command sketch for UNO Q.
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Arduino_Modulino.h>
 #include <Arduino_RouterBridge.h>
 
 #if !defined(ARDUINO_ARCH_ZEPHYR)
@@ -39,11 +28,6 @@ const int MAX_DRIVE_MS = 5000;
 const int DEFAULT_PULSE_MS = 700;
 const int DEFAULT_SPEED = 180;
 
-// Observed with UNO Q on this miniAuto:
-// sketch M0/PWM D10 -> board connector M3, forward only with current DIR map
-// sketch M1/PWM D9  -> board connector M2, backward only with current DIR map
-// sketch M2/PWM D6  -> board connector M1, forward/backward works with DIR D7
-// sketch M3/PWM D11 -> board connector M4, forward only with current DIR map
 const char MOTOR_BOARD_CONNECTOR[4][3] = {"M3", "M2", "M1", "M4"};
 
 const uint8_t ULTRASONIC_I2C_ADDR = 0x77;
@@ -52,10 +36,16 @@ const uint8_t ULTRASONIC_RGB_MODE = 2;
 const uint8_t ULTRASONIC_RGB1_R = 3;
 const uint8_t ULTRASONIC_RGB_SIMPLE_MODE = 0;
 
+ModulinoButtons modulinoButtons;
+ModulinoKnob modulinoKnob;
+
 unsigned long driveStopAt = 0;
 bool driveTimerActive = false;
 uint8_t speedPercent = 55;
 bool obstacleAvoidEnabled = false;
+bool modulinoButtonsReady = false;
+bool modulinoKnobReady = false;
+bool programEnabled = true;
 unsigned long lastAvoidUpdate = 0;
 String commandBuffer;
 unsigned long lastCommandByteAt = 0;
@@ -161,8 +151,6 @@ void rgbSendByteSlow(uint8_t value) {
 }
 
 void setRgb(uint8_t r, uint8_t g, uint8_t b) {
-  // The I2C ultrasonic RGB is the reliable status light on UNO Q. This
-  // best-effort WS2812 pulse path is secondary.
   noInterrupts();
   rgbSendByteSlow(g);
   rgbSendByteSlow(r);
@@ -418,8 +406,37 @@ String readSensorsJson() {
   json += distanceCm;
   json += ",\"battery_mv\":";
   json += batteryMv;
+  json += ",\"program_enabled\":";
+  json += programEnabled ? "true" : "false";
+  json += ",\"modulino_buttons\":";
+  json += modulinoButtonsReady ? "true" : "false";
   json += "}";
   return json;
+}
+
+void updateModulinoButtons() {
+  bool buttonPressed = false;
+  bool knobRotated = false;
+
+  if (modulinoButtonsReady && modulinoButtons.update()) {
+    buttonPressed = modulinoButtons.isPressed('A');
+  }
+
+  if (modulinoKnobReady) {
+    knobRotated = modulinoKnob.getDirection() != 0;
+  }
+
+  if (!buttonPressed && !knobRotated) {
+    return;
+  }
+
+  programEnabled = !programEnabled;
+  obstacleAvoidEnabled = false;
+  stopMotors();
+  if (modulinoButtonsReady) {
+    modulinoButtons.setLeds(programEnabled, false, false);
+  }
+  CMD_IO.println(programEnabled ? F("OK program on") : F("OK program off"));
 }
 
 #if HAS_ROUTER_BRIDGE
@@ -1013,8 +1030,14 @@ void setup() {
   CMD_IO.begin(9600);
   CMD_IO.setTimeout(80);
   Wire.begin();
+  Modulino.begin();
+  modulinoButtonsReady = modulinoButtons.begin();
+  modulinoKnobReady = modulinoKnob.begin();
   setupPins();
   setUltrasonicColor(0, 0, 0);
+  if (modulinoButtonsReady) {
+    modulinoButtons.setLeds(programEnabled, false, false);
+  }
 #if HAS_ROUTER_BRIDGE
   if (Bridge.begin()) {
     registerBridgeMethods();
@@ -1026,6 +1049,7 @@ void setup() {
 
 void loop() {
   pollSerial();
+  updateModulinoButtons();
   updateDriveTimer();
   updateObstacleAvoid();
 }
