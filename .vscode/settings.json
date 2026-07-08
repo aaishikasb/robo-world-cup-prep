@@ -1,0 +1,13 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "&": true,
+        "/^\\$ErrorActionPreference = 'Stop'; \\$adb = 'C:\\\\Users\\\\qc_de\\\\Documents\\\\platform-tools-latest-windows\\\\platform-tools\\\\adb\\.exe'; \\$serial = '2553002948'; \\$src = 'c:\\\\Users\\\\qc_de\\\\Developer\\\\robo-world-cup-prep\\\\emre-fomo-code'; \\$appRoot = '/home/arduino/ArduinoApps/ai-la-robocup/emre-fomo-code'; & \\$adb -s \\$serial shell \"mkdir -p \\$appRoot/assets \\$appRoot/python \\$appRoot/sketch\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'app\\.yaml'\\) \"\\$appRoot/app\\.yaml\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'assets\\\\index\\.html'\\) \"\\$appRoot/assets/index\\.html\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'python\\\\main\\.py'\\) \"\\$appRoot/python/main\\.py\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'python\\\\robot_client\\.py'\\) \"\\$appRoot/python/robot_client\\.py\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'python\\\\requirements\\.txt'\\) \"\\$appRoot/python/requirements\\.txt\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'python\\\\spin_test\\.py'\\) \"\\$appRoot/python/spin_test\\.py\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'python\\\\miniauto-soccer-robo-world-cup-training-v2-linux-aarch64-v1-impulse-#1\\.eim'\\) \"\\$appRoot/python/miniauto-soccer-robo-world-cup-training-v2-linux-aarch64-v1-impulse-#1\\.eim\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'sketch\\\\sketch\\.ino'\\) \"\\$appRoot/sketch/sketch\\.ino\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'sketch\\\\sketch\\.yaml'\\) \"\\$appRoot/sketch/sketch\\.yaml\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'sketch\\\\s3camSSIDswap\\.txt'\\) \"\\$appRoot/sketch/s3camSSIDswap\\.txt\"; & \\$adb -s \\$serial push \\(Join-Path \\$src 'sketch\\\\SSID_Resources\\.md'\\) \"\\$appRoot/sketch/SSID_Resources\\.md\"; & \\$adb -s \\$serial shell /usr/bin/arduino-app-cli app restart user:ai-la-robocup/emre-fomo-code$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$adb = 'C:\\\\Users\\\\qc_de\\\\Documents\\\\platform-tools-latest-windows\\\\platform-tools\\\\adb\\.exe'; & \\$adb devices$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

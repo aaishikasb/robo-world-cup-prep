@@ -46,6 +46,9 @@ bool obstacleAvoidEnabled = false;
 bool modulinoButtonsReady = false;
 bool modulinoKnobReady = false;
 bool programEnabled = true;
+bool programEnablePending = false;
+unsigned long programEnableAt = 0;
+int lastCountdownSecond = -1;
 unsigned long lastAvoidUpdate = 0;
 String commandBuffer;
 unsigned long lastCommandByteAt = 0;
@@ -408,10 +411,51 @@ String readSensorsJson() {
   json += batteryMv;
   json += ",\"program_enabled\":";
   json += programEnabled ? "true" : "false";
+  json += ",\"program_enable_pending\":";
+  json += programEnablePending ? "true" : "false";
   json += ",\"modulino_buttons\":";
   json += modulinoButtonsReady ? "true" : "false";
   json += "}";
   return json;
+}
+
+void setProgramEnabled(bool enabled) {
+  programEnablePending = false;
+  lastCountdownSecond = -1;
+  programEnabled = enabled;
+  obstacleAvoidEnabled = false;
+  stopMotors();
+  if (modulinoButtonsReady) {
+    modulinoButtons.setLeds(programEnabled, false, false);
+  }
+}
+
+void beginProgramEnableCountdown() {
+  setProgramEnabled(false);
+  programEnablePending = true;
+  programEnableAt = millis() + 10000UL;
+  lastCountdownSecond = 10;
+  CMD_IO.println(F("OK program starts in 10"));
+}
+
+void updateProgramEnableCountdown() {
+  if (!programEnablePending) {
+    return;
+  }
+
+  long remainingMs = (long)(programEnableAt - millis());
+  if (remainingMs <= 0) {
+    setProgramEnabled(true);
+    CMD_IO.println(F("OK program on"));
+    return;
+  }
+
+  int remainingSeconds = (int)((remainingMs + 999) / 1000);
+  if (remainingSeconds != lastCountdownSecond) {
+    lastCountdownSecond = remainingSeconds;
+    CMD_IO.print(F("COUNTDOWN "));
+    CMD_IO.println(remainingSeconds);
+  }
 }
 
 void updateModulinoButtons() {
@@ -430,13 +474,19 @@ void updateModulinoButtons() {
     return;
   }
 
-  programEnabled = !programEnabled;
-  obstacleAvoidEnabled = false;
-  stopMotors();
-  if (modulinoButtonsReady) {
-    modulinoButtons.setLeds(programEnabled, false, false);
+  if (programEnablePending) {
+    setProgramEnabled(false);
+    CMD_IO.println(F("OK program countdown canceled"));
+    return;
   }
-  CMD_IO.println(programEnabled ? F("OK program on") : F("OK program off"));
+
+  if (programEnabled) {
+    setProgramEnabled(false);
+    CMD_IO.println(F("OK program off"));
+    return;
+  }
+
+  beginProgramEnableCountdown();
 }
 
 #if HAS_ROUTER_BRIDGE
@@ -1050,6 +1100,7 @@ void setup() {
 void loop() {
   pollSerial();
   updateModulinoButtons();
+  updateProgramEnableCountdown();
   updateDriveTimer();
   updateObstacleAvoid();
 }
