@@ -120,6 +120,41 @@ _ball_vx_ema = 0.0
 _last_sensor_poll_at = 0.0
 
 
+def _reset_runtime_state() -> None:
+    global _last_ball_seen_at, _last_ball_center_x, _last_ball_quadrant
+    global _last_command_at, _last_detect_log_at, _robot_mode, _search_direction
+    global _last_search_switch_at, _last_preview_submit_at, _last_preview_encoded_seq
+    global _recovery_mode_active, _recovery_phase_direction, _recovery_phase_started_at
+    global _ball_center_x_ema, _ball_center_y_ema, _ball_area_ema, _commit_until
+    global _last_correction_at, _last_ball_center_x_sample, _last_ball_sample_at
+    global _ball_vx_ema, preview_image, preview_result, preview_updated_at
+
+    _last_ball_seen_at = 0.0
+    _last_ball_center_x = None
+    _last_ball_quadrant = None
+    _last_command_at = 0.0
+    _last_detect_log_at = 0.0
+    _robot_mode = "idle"
+    _search_direction = 1
+    _last_search_switch_at = 0.0
+    _last_preview_submit_at = 0.0
+    _last_preview_encoded_seq = -1
+    _recovery_mode_active = False
+    _recovery_phase_direction = -1
+    _recovery_phase_started_at = 0.0
+    _ball_center_x_ema = None
+    _ball_center_y_ema = None
+    _ball_area_ema = None
+    _commit_until = 0.0
+    _last_correction_at = 0.0
+    _last_ball_center_x_sample = None
+    _last_ball_sample_at = 0.0
+    _ball_vx_ema = 0.0
+    preview_image = b""
+    preview_result = {}
+    preview_updated_at = 0
+
+
 def resolve_web_assets_dir() -> Path | None:
     for candidate in (PROJECT_FOLDER / "assets", PROJECT_FOLDER):
         if (candidate / "index.html").exists():
@@ -179,6 +214,8 @@ def _poll_program_enabled() -> None:
 
     _program_enabled = enabled
     if _program_enabled:
+        _reset_runtime_state()
+        robot.stop()
         _set_robot_mode("idle", "[ROBOT] Modulino A - program on")
         return
 
