@@ -45,11 +45,13 @@ uint8_t speedPercent = 55;
 bool obstacleAvoidEnabled = false;
 bool modulinoButtonsReady = false;
 bool modulinoKnobReady = false;
-bool programEnabled = true;
+bool programEnabled = false;
 bool programEnablePending = false;
 unsigned long programEnableAt = 0;
 int lastCountdownSecond = -1;
 unsigned long lastAvoidUpdate = 0;
+unsigned long lastIdleFlashAt = 0;
+bool idleFlashState = false;
 String commandBuffer;
 unsigned long lastCommandByteAt = 0;
 
@@ -323,17 +325,18 @@ bool setServoAngle(int angle) {
 
 void chirp() {
   for (uint8_t i = 0; i < 3; i++) {
-    unsigned long endAt = millis() + 100;
+    unsigned long endAt = millis() + 60;
     while (millis() < endAt) {
       digitalWrite(PIN_BUZZER, HIGH);
-      delayMicroseconds(250);
+      delayMicroseconds(1000);
       digitalWrite(PIN_BUZZER, LOW);
-      delayMicroseconds(250);
+      delayMicroseconds(1000);
     }
     delay(80);
   }
   digitalWrite(PIN_BUZZER, LOW);
 }
+
 
 String normalized(String input) {
   input.replace(',', ' ');
@@ -426,16 +429,38 @@ void setProgramEnabled(bool enabled) {
   obstacleAvoidEnabled = false;
   stopMotors();
   if (modulinoButtonsReady) {
-    modulinoButtons.setLeds(programEnabled, false, false);
+    if (enabled) {
+      modulinoButtons.setLeds(true, true, true);
+      setUltrasonicColor(0, 255, 0);
+      delay(1000);
+      modulinoButtons.setLeds(true, false, false);
+      setUltrasonicColor(0, 0, 0);
+    } else {
+      modulinoButtons.setLeds(false, false, false);
+      setUltrasonicColor(0, 0, 0);
+    }
   }
 }
 
 void beginProgramEnableCountdown() {
   setProgramEnabled(false);
   programEnablePending = true;
-  programEnableAt = millis() + 10000UL;
-  lastCountdownSecond = 10;
-  CMD_IO.println(F("OK program starts in 10"));
+  if (modulinoButtonsReady) {
+    modulinoButtons.setLeds(true, false, false);
+    setUltrasonicColor(255, 0, 0);
+    delay(800);
+    modulinoButtons.setLeds(true, true, false);
+    setUltrasonicColor(255, 180, 0);
+    delay(800);
+    modulinoButtons.setLeds(true, true, true);
+    setUltrasonicColor(0, 255, 0);
+    delay(1000);
+    modulinoButtons.setLeds(false, false, false);
+    setUltrasonicColor(0, 0, 0);
+  }
+  programEnableAt = millis();
+  lastCountdownSecond = 0;
+  CMD_IO.println(F("OK program on"));
 }
 
 void updateProgramEnableCountdown() {
@@ -455,6 +480,26 @@ void updateProgramEnableCountdown() {
     lastCountdownSecond = remainingSeconds;
     CMD_IO.print(F("COUNTDOWN "));
     CMD_IO.println(remainingSeconds);
+  }
+}
+
+void updateIdleFlash() {
+  if (programEnabled || programEnablePending) {
+    return;
+  }
+  if (!modulinoButtonsReady) {
+    return;
+  }
+  unsigned long now = millis();
+  if (now - lastIdleFlashAt >= 1500) {
+    lastIdleFlashAt = now;
+    idleFlashState = !idleFlashState;
+    modulinoButtons.setLeds(idleFlashState, false, false);
+    if (idleFlashState) {
+      setUltrasonicColor(0, 0, 255);
+    } else {
+      setUltrasonicColor(0, 0, 0);
+    }
   }
 }
 
@@ -1103,4 +1148,6 @@ void loop() {
   updateProgramEnableCountdown();
   updateDriveTimer();
   updateObstacleAvoid();
+  updateIdleFlash();
 }
+
