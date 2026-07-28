@@ -17,14 +17,9 @@ def drive(direction: str, speed: int = 150, ms: int = 500) -> None:
 
 
 def wait_for_button() -> None:
-    """Wait until Modulino A is pressed and the sketch enables the program.
-    The sketch handles all LED feedback — Python stays silent here.
-    If no Modulino is connected, skips the wait and starts immediately."""
-    sensors = robot.read_sensors()
-    if not sensors.get("modulino_buttons"):
-        print("[INFO] no Modulino detected - starting immediately")
-        return
-    print("[INFO] waiting for Modulino button A to start...")
+    """Wait until the CAM board's BOOT button is pressed and the sketch enables the program.
+    The sketch handles all LED feedback — Python stays silent here."""
+    print("[INFO] waiting for BOOT button to start...")
     while not robot.read_sensors().get("program_enabled"):
         time.sleep(0.1)
     print("[INFO] program enabled - starting")

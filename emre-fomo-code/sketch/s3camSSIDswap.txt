@@ -14,6 +14,7 @@
 
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <Wire.h>
 #include "esp_http_server.h"
 #include "img_converters.h"   // for frame2jpg()
 
@@ -54,6 +55,21 @@
 #define XCLK_FREQ_HZ 15000000  // Hiwonder's value
 
 // ------------------------------------------------------------
+// Start button — reads the onboard BOOT button (GPIO0) and exposes
+// a press counter over I2C so the UNO Q (connected via the 4-pin
+// SDA/SCL/GND/5V expansion header) can poll it. GPIO0 is only ever
+// read here, never driven, so the CAM's own boot/reset is unaffected.
+// If the UNO Q never sees this device on the bus, swap CAM_SDA_PIN
+// and CAM_SCL_PIN below — the header's wire order isn't documented.
+// ------------------------------------------------------------
+#define BUTTON_GPIO_NUM       0
+#define BUTTON_DEBOUNCE_MS    30
+#define BUTTON_HOLD_MS        5000
+#define CAM_I2C_ADDR          0x79
+#define CAM_SDA_PIN           47
+#define CAM_SCL_PIN           48
+
+// ------------------------------------------------------------
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char* STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -63,6 +79,47 @@ static const char* STREAM_PART =
 
 httpd_handle_t stream_httpd = NULL;
 bool camera_ok = false;
+
+bool buttonLastRaw = true;      // INPUT_PULLUP: idle = HIGH
+bool buttonStable = true;
+unsigned long buttonLastChangeAt = 0;
+unsigned long buttonHeldSince = 0;
+bool buttonHoldFired = false;
+volatile uint8_t buttonPressCount = 0;  // short press -> start/stop toggle (unchanged)
+volatile uint8_t buttonHoldState = 0;   // 5s hold -> separate on/off boolean, flips each qualifying hold
+
+static void updateStartButton() {
+    bool raw = digitalRead(BUTTON_GPIO_NUM);
+    unsigned long now = millis();
+
+    if (raw != buttonLastRaw) {
+        buttonLastRaw = raw;
+        buttonLastChangeAt = now;
+    } else if (now - buttonLastChangeAt >= BUTTON_DEBOUNCE_MS && raw != buttonStable) {
+        buttonStable = raw;
+        if (buttonStable == false) {  // active-low press just started
+            buttonHeldSince = now;
+            buttonHoldFired = false;
+        } else {  // released
+            buttonHeldSince = 0;
+            if (!buttonHoldFired) {
+                buttonPressCount++;  // short press: released before the hold threshold
+            }
+            buttonHoldFired = false;
+        }
+    }
+
+    if (buttonStable == false && !buttonHoldFired && buttonHeldSince != 0 &&
+        now - buttonHeldSince >= BUTTON_HOLD_MS) {
+        buttonHoldFired = true;  // long hold fires once; suppresses the short-press count on release
+        buttonHoldState = !buttonHoldState;
+    }
+}
+
+static void onI2cRequest() {
+    uint8_t payload[2] = {buttonPressCount, buttonHoldState};
+    Wire.write(payload, 2);
+}
 
 static esp_err_t stream_handler(httpd_req_t *req) {
     if (!camera_ok) {
@@ -148,6 +205,10 @@ void startStreamServer() {
 }
 
 void setup() {
+    pinMode(BUTTON_GPIO_NUM, INPUT_PULLUP);
+    Wire.begin(CAM_I2C_ADDR, CAM_SDA_PIN, CAM_SCL_PIN, 100000);
+    Wire.onRequest(onI2cRequest);
+
     // Start WiFi AP first
     IPAddress local_ip, gateway, subnet;
     local_ip.fromString(AP_IP);
@@ -197,5 +258,6 @@ void setup() {
 }
 
 void loop() {
-    delay(10000);
+    updateStartButton();
+    delay(10);
 }
