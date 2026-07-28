@@ -16,6 +16,10 @@ class MiniAutoRobot:
     def is_running(self) -> bool:
         return bool(self.read_sensors().get("program_enabled"))
 
+    def hold_toggle(self) -> bool:
+        """Read-only state of the CAM boot button's 5-second-hold toggle (red/blue LED)."""
+        return bool(self.read_sensors().get("hold_toggle"))
+
     def _require_running(self) -> None:
         if not self.is_running():
             raise ProgramStopped
@@ -69,3 +73,4 @@ class MiniAutoRobot:
             print("[INFO] program stopped - press the button again to restart")
         finally:
             self.stop()
+            print(f"[INFO] hold_toggle landed on: {'blue' if self.hold_toggle() else 'red'}")

@@ -423,6 +423,8 @@ String readSensorsJson() {
   json += programEnabled ? "true" : "false";
   json += ",\"program_enable_pending\":";
   json += programEnablePending ? "true" : "false";
+  json += ",\"hold_toggle\":";
+  json += (lastCamHoldState > 0) ? "true" : "false";
   json += "}";
   return json;
 }
