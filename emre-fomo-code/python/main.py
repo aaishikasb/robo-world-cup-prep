@@ -13,16 +13,6 @@ def drive(direction: str, speed: int = 150, ms: int = 500) -> None:
     """Drive and wait for the move to finish before continuing."""
     print(f"  {direction} speed={speed} ms={ms}")
     robot.drive(direction, speed, ms)
-    time.sleep(ms / 1000.0 + 0.1)
-
-
-def wait_for_button() -> None:
-    """Wait until the CAM board's BOOT button is pressed and the sketch enables the program.
-    The sketch handles all LED feedback — Python stays silent here."""
-    print("[INFO] waiting for BOOT button to start...")
-    while not robot.read_sensors().get("program_enabled"):
-        time.sleep(0.1)
-    print("[INFO] program enabled - starting")
 
 
 def loop() -> None:
@@ -53,12 +43,10 @@ def loop() -> None:
     robot.led(False)
 
     robot.stop()
-    raise SystemExit
 
 
+print("[INFO] waiting for BOOT button to start...")
 try:
-    wait_for_button()
-    App.run(user_loop=loop)
+    App.run(user_loop=lambda: robot.run_program(loop))
 finally:
     robot.stop()
-
