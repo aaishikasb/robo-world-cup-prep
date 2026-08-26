@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\egumus\\\\Developer\\\\robo-world-cup-prep\" diff)",
+      "Bash(git -C \"c:\\\\Users\\\\egumus\\\\Developer\\\\robo-world-cup-prep\" diff emre-fomo-code/sketch/sketch.ino)",
+      "WebSearch",
+      "WebFetch(domain:docs.arduino.cc)",
+      "WebFetch(domain:store.arduino.cc)",
+      "Bash(xargs ls -la)",
+      "Bash(python3 -c ' *)",
+      "Read(//c//**)"
+    ]
+  }
+}

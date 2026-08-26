@@ -175,12 +175,14 @@ print(f"[TEAM] active team: {'BLUE' if _last_toggle else 'RED'}  (hold CAM butto
 # ---------------------------------------------------------------------------
 
 def drive(direction: str, speed: int = 150, ms: int = 500) -> None:
+    robot._require_running()
     print(f"  {direction:14s} speed={speed} ms={ms}")
     robot.drive(direction, speed, ms)
     time.sleep(ms / 1000.0)
 
 
 def drive_diag(direction: str, speed: int = 150, ms: int = 500) -> None:
+    robot._require_running()
     print(f"  {direction:14s} speed={speed} ms={ms}")
     robot.drive_diagonal(direction, speed, ms)
     time.sleep(ms / 1000.0)
@@ -220,7 +222,6 @@ def loop() -> None:
     drive_diag("back_left",     speed=150, ms=500)
     drive_diag("back_right",    speed=150, ms=500)
     drive("rotate_left",    speed=255, ms=3250)
-    time.sleep(0.5)
     drive("rotate_right",   speed=255, ms=3250)
 
     robot.stop()

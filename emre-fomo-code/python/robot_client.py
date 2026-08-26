@@ -21,10 +21,8 @@ class MiniAutoRobot:
         return bool(self.read_sensors().get("hold_toggle"))
 
     def _require_running(self) -> None:
-        sensors = self.read_sensors()
-        if sensors and not sensors.get("program_enabled"):
+        if not self._session_active:
             raise ProgramStopped
-        # empty sensors = transient serial failure — keep running
 
     def drive(self, command: str, speed: int = 150, ms: int = 500) -> None:
         Bridge.call("drive", command, int(speed), int(ms))
@@ -65,17 +63,24 @@ class MiniAutoRobot:
         return json.loads(raw) if raw else {}
 
     def run_program(self, routine: Callable[[], None]) -> None:
-        """Pass this as App.run's user_loop. Loops routine() while the button is enabled.
-        Pressing the button stops after the current iteration completes; pressing again restarts."""
-        running = self.is_running()
-        if not running:
+        """Pass this as App.run's user_loop. Button press starts the program; a second
+        press between routine calls stops it. _session_active is the authoritative stop
+        flag during a move (avoids false-stop on transient sensor read failures)."""
+        currently_enabled = self.is_running()
+        if not currently_enabled:
             if self._session_active:
+                # firmware just flipped off — user pressed stop between calls
+                self._session_active = False
+                self.stop()
                 print("[INFO] program stopped - press the button again to restart")
                 print(f"[INFO] hold_toggle: {'blue' if self.hold_toggle() else 'red'}")
-                self.stop()
-            self._session_active = False
             return
         if not self._session_active:
             self._session_active = True
             print("[INFO] program enabled - starting")
-        routine()
+        try:
+            routine()
+        except ProgramStopped:
+            self.stop()
+            self._session_active = False
+            print("[INFO] program stopped mid-sequence - press the button again to restart")
