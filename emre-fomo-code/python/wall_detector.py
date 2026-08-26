@@ -36,27 +36,25 @@ class WallDetector:
 
     def detect(self, frame_bgr: np.ndarray) -> str:
         """Return 'RED', 'BLUE', or 'UNKNOWN' for a given BGR frame."""
+        return self.detect_with_coverage(frame_bgr)[0]
+
+    def detect_with_coverage(self, frame_bgr: np.ndarray) -> tuple[str, dict]:
+        """Return (side, coverage_dict) in a single HSV pass."""
         if frame_bgr is None or frame_bgr.size == 0:
-            return "UNKNOWN"
+            return "UNKNOWN", {"red": 0.0, "blue": 0.0, "total_pixels": 0}
         hsv   = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
         total = hsv.shape[0] * hsv.shape[1]
         red_f  = self._count_red(hsv)  / total
         blue_f = self._count_blue(hsv) / total
         if red_f < self.min_coverage and blue_f < self.min_coverage:
-            return "UNKNOWN"
-        return "RED" if red_f >= blue_f else "BLUE"
+            side = "UNKNOWN"
+        else:
+            side = "RED" if red_f >= blue_f else "BLUE"
+        return side, {"red": red_f, "blue": blue_f, "total_pixels": total}
 
     def coverage(self, frame_bgr: np.ndarray) -> dict:
         """Return {'red': float, 'blue': float, 'total_pixels': int} for diagnostics."""
-        if frame_bgr is None or frame_bgr.size == 0:
-            return {"red": 0.0, "blue": 0.0, "total_pixels": 0}
-        hsv   = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-        total = hsv.shape[0] * hsv.shape[1]
-        return {
-            "red":          self._count_red(hsv)  / total,
-            "blue":         self._count_blue(hsv) / total,
-            "total_pixels": total,
-        }
+        return self.detect_with_coverage(frame_bgr)[1]
 
     @staticmethod
     def _count_red(hsv: np.ndarray) -> int:

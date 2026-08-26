@@ -122,12 +122,12 @@ def _copy_frame() -> Image.Image | None:
 # ---------------------------------------------------------------------------
 
 _wall = WallDetector()
-_last_wall_side = "UNKNOWN"
+_last_wall_side = None
 
 
-def _detect_wall(pil_frame: Image.Image) -> str:
+def _detect_wall(pil_frame: Image.Image) -> tuple[str, dict]:
     bgr = cv2.cvtColor(np.asarray(pil_frame), cv2.COLOR_RGB2BGR)
-    return _wall.detect(bgr)
+    return _wall.detect_with_coverage(bgr)
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +202,10 @@ def loop() -> None:
     # Camera: wall detection + optional inference
     frame = _copy_frame()
     if frame is not None:
-        side = _detect_wall(frame)
+        side, cov = _detect_wall(frame)
         if side != _last_wall_side:
             _last_wall_side = side
-            print(f"[WALL] side: {side}")
+            print(f"[WALL] side: {side}  (red={cov['red']:.3f} blue={cov['blue']:.3f})")
         detections = _run_inference(frame)
         if detections:
             print(f"[DETECT] {detections}")
