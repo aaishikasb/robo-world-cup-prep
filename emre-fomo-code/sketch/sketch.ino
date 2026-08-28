@@ -1,4 +1,16 @@
-// Hiwonder miniAuto command sketch for UNO Q.
+/*
+  Hiwonder miniAuto control sketch.
+
+  Hardware facts are from Hiwonder's miniAuto examples:
+  - Motor PWM pins: D10, D9, D6, D11
+  - Motor direction pins: D12, D8, D7, D13
+  - Onboard WS2812 RGB data: D2
+  - Passive buzzer: D3
+  - Servo/gripper: D5
+  - Battery divider: A3
+  - Glowing ultrasonic sensor: I2C 0x77, distance in millimeters
+  - 4-channel line sensor: I2C 0x78, line bits in register 1
+*/
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -12,6 +24,8 @@
 #define CMD_IO Monitor
 const char MCU_NAME[] = "uno_q";
 
+// Fixed miniAuto wiring. Keep these in one place so motor/sensor mapping can
+// be checked against the board without digging through the control logic.
 const uint8_t PIN_RGB = 2;
 const uint8_t PIN_BUZZER = 3;
 const uint8_t PIN_SERVO = 5;
@@ -27,11 +41,17 @@ const int MAX_DRIVE_MS = 5000;
 const int DEFAULT_PULSE_MS = 700;
 const int DEFAULT_SPEED = 180;
 
+// Observed with UNO Q on this miniAuto. These labels are used in the serial
+// diagnostic commands so students can compare sketch channels to board labels.
+// sketch M0/PWM D10 -> board connector M3, forward only with current DIR map
+// sketch M1/PWM D9  -> board connector M2, backward only with current DIR map
+// sketch M2/PWM D6  -> board connector M1, forward/backward works with DIR D7
+// sketch M3/PWM D11 -> board connector M4, forward only with current DIR map
 const char MOTOR_BOARD_CONNECTOR[4][3] = {"M3", "M2", "M1", "M4"};
 
 const uint8_t ULTRASONIC_I2C_ADDR = 0x77;
 const uint8_t LINE_FOLLOWER_I2C_ADDR = 0x78;
-const uint8_t CAM_BUTTON_I2C_ADDR = 0x79;  // ESP32S3-CAM BOOT-button press counter
+const uint8_t CAM_BUTTON_I2C_ADDR = 0x79;
 const uint8_t ULTRASONIC_RGB_MODE = 2;
 const uint8_t ULTRASONIC_RGB1_R = 3;
 const uint8_t ULTRASONIC_RGB_SIMPLE_MODE = 0;
@@ -42,16 +62,16 @@ uint8_t speedPercent = 55;
 bool obstacleAvoidEnabled = false;
 bool programEnabled = false;
 bool programEnablePending = false;
-unsigned long programEnableAt = 0;
-int lastCountdownSecond = -1;
-unsigned long lastAvoidUpdate = 0;
+int lastCamHoldState = -1;
 unsigned long lastIdleFlashAt = 0;
 bool idleFlashState = false;
-int lastCamButtonCount = -1;
-int lastCamHoldState = -1;
+unsigned long lastButtonActionAt = 0;
+unsigned long lastAvoidUpdate = 0;
 String commandBuffer;
 unsigned long lastCommandByteAt = 0;
 
+// Keep inputs inside the physical/safety ranges expected by the motor and
+// timing code. This sketch accepts commands from both Bridge RPC and serial.
 int clampInt(int value, int low, int high) {
   if (value < low) {
     return low;
@@ -105,6 +125,7 @@ int readUltrasonicMm() {
   if (i2cReadData(ULTRASONIC_I2C_ADDR, 0, bytes, 2) != 2) {
     return -1;
   }
+  // Sensor returns little-endian millimeters.
   return (int)(bytes[0] | (bytes[1] << 8));
 }
 
@@ -133,15 +154,14 @@ bool readLineBits(uint8_t bits[4]) {
 
 bool readCamButtonState(int *pressCountOut, int *holdStateOut) {
   Wire.requestFrom(CAM_BUTTON_I2C_ADDR, (uint8_t)2);
-  if (Wire.available() < 2) {
-    return false;
-  }
+  if (Wire.available() < 2) { return false; }
   *pressCountOut = (int)Wire.read();
-  *holdStateOut = (int)Wire.read();
+  *holdStateOut  = (int)Wire.read();
   return true;
 }
 
 int readBatteryMv() {
+  // Conversion factor comes from the miniAuto battery divider calibration.
   return (int)(analogRead(PIN_BATTERY) * 29.89);
 }
 
@@ -163,6 +183,8 @@ void rgbSendByteSlow(uint8_t value) {
 }
 
 void setRgb(uint8_t r, uint8_t g, uint8_t b) {
+  // The I2C ultrasonic RGB is the reliable status light on UNO Q. This
+  // best-effort WS2812 pulse path is secondary.
   noInterrupts();
   rgbSendByteSlow(g);
   rgbSendByteSlow(r);
@@ -179,6 +201,8 @@ void motorsSetPercent(int motor0, int motor1, int motor2, int motor3) {
     clampInt(motor3, -100, 100)
   };
   for (uint8_t i = 0; i < 4; i++) {
+    // MOTOR_POSITIVE_DIR normalizes each channel so positive percentages mean
+    // the same logical wheel direction even when the board wiring differs.
     bool direction = MOTOR_POSITIVE_DIR[i];
     if (motors[i] < 0) {
       direction = !direction;
@@ -203,6 +227,8 @@ void pwmOnlySet(uint8_t mask, int8_t reversibleMotor2, uint8_t speed) {
   stopMotors();
   speed = constrain(speed, 0, 255);
 
+  // Fallback diagnostic mode: drive selected PWM channels directly. Only M2 is
+  // known to reverse reliably with the current direction wiring.
   for (uint8_t i = 0; i < 4; i++) {
     bool positive = true;
     if (i == 2 && reversibleMotor2 < 0) {
@@ -229,6 +255,8 @@ void pwmOnlyCombo(uint8_t mask, int8_t reversibleMotor2, uint16_t durationMs, ui
 void velocityController(uint16_t angle, uint8_t velocity, int8_t rot, bool drift) {
   float speedFactor = (rot == 0) ? 1.0 : 0.5;
   float velocityScaled = velocity / sqrt(2.0);
+  // The mecanum/omni wheel math treats 0 degrees as forward after the 90 degree
+  // offset, then mixes rotation into each wheel.
   float rad = (angle + 90) * PI / 180.0;
 
   int motor0;
@@ -253,6 +281,8 @@ void velocityController(uint16_t angle, uint8_t velocity, int8_t rot, bool drift
 void armDriveTimer(int durationMs) {
   durationMs = clampDuration(durationMs);
   if (durationMs > 0) {
+    // A nonzero duration makes the robot stop itself even if the caller does
+    // not send a later stop command.
     driveStopAt = millis() + (unsigned long)durationMs;
     driveTimerActive = true;
   } else {
@@ -276,6 +306,7 @@ bool driveCommand(String command, int speed, int durationMs) {
   const uint8_t percent = speedToPercent(speed);
   speedPercent = percent;
 
+  // Human-friendly aliases are accepted for both serial and Bridge callers.
   if (command == "stop" || command == "x") {
     stopMotors();
     return true;
@@ -315,6 +346,8 @@ bool driveCommand(String command, int speed, int durationMs) {
 }
 
 void servoPulse(uint16_t pulseUs) {
+  // Minimal software servo pulse. Repeated pulses in setServoAngle give the
+  // gripper enough time to move without needing a Servo library dependency.
   digitalWrite(PIN_SERVO, HIGH);
   delayMicroseconds(pulseUs);
   digitalWrite(PIN_SERVO, LOW);
@@ -332,20 +365,21 @@ bool setServoAngle(int angle) {
 
 void chirp() {
   for (uint8_t i = 0; i < 3; i++) {
-    unsigned long endAt = millis() + 60;
+    unsigned long endAt = millis() + 100;
     while (millis() < endAt) {
       digitalWrite(PIN_BUZZER, HIGH);
-      delayMicroseconds(1000);
+      delayMicroseconds(250);
       digitalWrite(PIN_BUZZER, LOW);
-      delayMicroseconds(1000);
+      delayMicroseconds(250);
     }
     delay(80);
   }
   digitalWrite(PIN_BUZZER, LOW);
 }
 
-
 String normalized(String input) {
+  // Accept friendly shell-style commands plus Hiwonder's pipe-delimited format
+  // by turning separators into spaces before tokenizing.
   input.replace(',', ' ');
   input.replace('|', ' ');
   input.replace('(', ' ');
@@ -388,6 +422,8 @@ String readSensorsJson() {
   int batteryMv = readBatteryMv();
 
   String json = "{";
+  // Keep the payload small and JSON-shaped so Python callers can parse it with
+  // json.loads() while serial users can still read it directly.
   json += "\"robot\":\"hiwonder_miniauto\"";
   json += ",\"mcu\":\"";
   json += MCU_NAME;
@@ -421,124 +457,14 @@ String readSensorsJson() {
   json += batteryMv;
   json += ",\"program_enabled\":";
   json += programEnabled ? "true" : "false";
-  json += ",\"program_enable_pending\":";
-  json += programEnablePending ? "true" : "false";
   json += ",\"hold_toggle\":";
   json += (lastCamHoldState > 0) ? "true" : "false";
   json += "}";
   return json;
 }
 
-void setProgramEnabled(bool enabled) {
-  programEnablePending = false;
-  lastCountdownSecond = -1;
-  programEnabled = enabled;
-  obstacleAvoidEnabled = false;
-  stopMotors();
-  if (enabled) {
-    setUltrasonicColor(0, 255, 0);
-    delay(1000);
-    setUltrasonicColor(0, 0, 0);
-  } else {
-    setUltrasonicColor(0, 0, 0);
-  }
-}
-
-void beginProgramEnableCountdown() {
-  setProgramEnabled(false);
-  programEnablePending = true;
-  setUltrasonicColor(255, 0, 0);
-  delay(800);
-  setUltrasonicColor(255, 180, 0);
-  delay(800);
-  setUltrasonicColor(0, 255, 0);
-  delay(1000);
-  setUltrasonicColor(0, 0, 0);
-  programEnableAt = millis();
-  lastCountdownSecond = 0;
-  CMD_IO.println(F("OK program on"));
-}
-
-void updateProgramEnableCountdown() {
-  if (!programEnablePending) {
-    return;
-  }
-
-  long remainingMs = (long)(programEnableAt - millis());
-  if (remainingMs <= 0) {
-    setProgramEnabled(true);
-    CMD_IO.println(F("OK program on"));
-    return;
-  }
-
-  int remainingSeconds = (int)((remainingMs + 999) / 1000);
-  if (remainingSeconds != lastCountdownSecond) {
-    lastCountdownSecond = remainingSeconds;
-    CMD_IO.print(F("COUNTDOWN "));
-    CMD_IO.println(remainingSeconds);
-  }
-}
-
-void updateIdleFlash() {
-  if (programEnabled || programEnablePending) {
-    return;
-  }
-  unsigned long now = millis();
-  if (now - lastIdleFlashAt >= 1500) {
-    lastIdleFlashAt = now;
-    idleFlashState = !idleFlashState;
-    if (idleFlashState) {
-      setUltrasonicColor(0, 0, 255);
-    } else {
-      setUltrasonicColor(0, 0, 0);
-    }
-  }
-}
-
-void updateStartButton() {
-  bool buttonPressed = false;
-
-  int camButtonCount = 0;
-  int camHoldState = 0;
-  if (readCamButtonState(&camButtonCount, &camHoldState)) {
-    if (lastCamButtonCount < 0) {
-      lastCamButtonCount = camButtonCount;
-    } else if (camButtonCount != lastCamButtonCount) {
-      lastCamButtonCount = camButtonCount;
-      CMD_IO.println(F("BOOT button pressed"));
-      buttonPressed = true;
-    }
-
-    if (lastCamHoldState < 0) {
-      lastCamHoldState = camHoldState;
-      setRgb(lastCamHoldState ? 0 : 255, 0, lastCamHoldState ? 255 : 0);
-    } else if (camHoldState != lastCamHoldState) {
-      lastCamHoldState = camHoldState;
-      setRgb(lastCamHoldState ? 0 : 255, 0, lastCamHoldState ? 255 : 0);
-      CMD_IO.println(lastCamHoldState ? F("OK hold toggle on") : F("OK hold toggle off"));
-    }
-  }
-
-  if (!buttonPressed) {
-    return;
-  }
-
-  if (programEnablePending) {
-    setProgramEnabled(false);
-    CMD_IO.println(F("OK program countdown canceled"));
-    return;
-  }
-
-  if (programEnabled) {
-    setProgramEnabled(false);
-    CMD_IO.println(F("OK program off"));
-    return;
-  }
-
-  beginProgramEnableCountdown();
-}
-
 #if HAS_ROUTER_BRIDGE
+// Bridge RPC methods mirror the Python MiniAutoRobot client in python/.
 bool rpcDrive(String command, int speed, int durationMs) {
   return driveCommand(command, speed, durationMs);
 }
@@ -546,6 +472,7 @@ bool rpcDrive(String command, int speed, int durationMs) {
 bool rpcStop() {
   stopMotors();
   obstacleAvoidEnabled = false;
+  setProgramEnabled(false);
   return true;
 }
 
@@ -581,6 +508,8 @@ String rpcHealth() {
 }
 
 void registerBridgeMethods() {
+  // provide_safe exposes typed calls to the Python side through
+  // Arduino_RouterBridge.
   Bridge.provide_safe("drive", rpcDrive);
   Bridge.provide_safe("stop", rpcStop);
   Bridge.provide_safe("read_sensors", rpcReadSensors);
@@ -593,6 +522,7 @@ void registerBridgeMethods() {
 #endif
 
 void motorPulse(uint8_t motorIndex) {
+  // Simple per-channel hardware test used by serial commands 1..4.
   int motors[4] = {0, 0, 0, 0};
   motors[motorIndex] = 100;
   motorsSetPercent(motors[0], motors[1], motors[2], motors[3]);
@@ -641,6 +571,7 @@ void directionSweep(uint8_t motorIndex) {
   CMD_IO.println(MOTOR_PWM_PIN[motorIndex]);
   CMD_IO.println(F("Watch which D pin makes this motor reverse vs LOW baseline."));
 
+  // Compare a LOW baseline with each candidate direction pin driven HIGH.
   for (uint8_t i = 0; i < 4; i++) {
     setAllDirCandidates(LOW);
     CMD_IO.print(F("baseline all DIR LOW, PWM D"));
@@ -681,6 +612,8 @@ void directionHeaderScan(uint8_t motorIndex) {
   CMD_IO.println(F("Watch for any candidate pin that reverses this motor."));
   CMD_IO.println(F("Non-PWM scan pins: D2,D3,D4,D5,D7,D8,D12,D13,A0,A1,A2,A3"));
 
+  // Broader scan for boards whose direction pins are not on the expected
+  // header pins.
   for (uint8_t i = 0; i < sizeof(HEADER_DIR_SCAN_PIN) / sizeof(HEADER_DIR_SCAN_PIN[0]); i++) {
     setAllScanPins(LOW);
     CMD_IO.print(F("baseline scan pins LOW, PWM D"));
@@ -713,6 +646,8 @@ void comboScan() {
   CMD_IO.println(F("Mask bits: 1=M0/boardM3, 2=M1/boardM2, 4=M2/boardM1, 8=M3/boardM4."));
   CMD_IO.println(F("Report masks that move: forward, left-turn, right-turn, or usable wobble."));
 
+  // Try every PWM channel mask so a usable fallback movement can be found even
+  // when direction wiring is partially unknown.
   for (int8_t m2Dir = 1; m2Dir >= -1; m2Dir -= 2) {
     CMD_IO.print(F("M2 direction "));
     CMD_IO.println(m2Dir > 0 ? F("positive") : F("negative"));
@@ -843,6 +778,8 @@ void handleHiwonderProtocol(String line) {
   String function = tokenAt(line, 0);
   function.toUpperCase();
 
+  // Compatibility mode for Hiwonder examples:
+  // A=motion, B=RGB, C=speed, D=sensors, E=servo, F=obstacle avoidance.
   if (function == "A") {
     uint8_t state = (uint8_t)tokenAt(line, 1).toInt();
     switch (state) {
@@ -916,6 +853,8 @@ void handleLineCommand(String line) {
     return;
   }
 
+  // Lines ending in '&' are treated as Hiwonder protocol commands such as
+  // A|2|&. Everything else uses this sketch's plain text command API.
   if (line.endsWith("&")) {
     handleHiwonderProtocol(line);
     return;
@@ -1058,6 +997,8 @@ bool isSingleCommandChar(char command) {
 void pollSerial() {
   bool received = false;
 
+  // Accept newline-terminated commands, single-key commands, and short commands
+  // without a newline by flushing the buffer after a brief idle timeout.
   while (CMD_IO.available()) {
     char incoming = (char)CMD_IO.read();
     received = true;
@@ -1089,6 +1030,69 @@ void pollSerial() {
   }
 }
 
+
+void setProgramEnabled(bool enabled) {
+  programEnablePending = false;
+  programEnabled = enabled;
+  obstacleAvoidEnabled = false;
+  stopMotors();
+  if (enabled) {
+    setUltrasonicColor(0, 255, 0);  // solid green while running
+  } else {
+    setUltrasonicColor(0, 0, 0);
+  }
+}
+
+void beginProgramEnableCountdown() {
+  stopMotors();
+  setUltrasonicColor(255, 0, 0);   // red
+  delay(600);
+  setUltrasonicColor(255, 180, 0); // yellow
+  delay(600);
+  setProgramEnabled(true);          // green solid — program is now live
+  CMD_IO.println(F("OK program on"));
+}
+
+void updateIdleFlash() {
+  if (programEnabled) { return; }
+  unsigned long now = millis();
+  if (now - lastIdleFlashAt >= 1500) {
+    lastIdleFlashAt = now;
+    idleFlashState = !idleFlashState;
+    setUltrasonicColor(0, 0, idleFlashState ? 255 : 0);
+  }
+}
+
+void updateStartButton() {
+  int camButtonCount = 0;
+  int camHoldState   = 0;
+  if (!readCamButtonState(&camButtonCount, &camHoldState)) { return; }
+
+  // Hold-toggle: update RGB team colour whenever it changes
+  if (lastCamHoldState < 0) {
+    lastCamHoldState = camHoldState;
+    setRgb(lastCamHoldState ? 0 : 255, 0, lastCamHoldState ? 255 : 0);
+  } else if (camHoldState != lastCamHoldState) {
+    lastCamHoldState = camHoldState;
+    setRgb(lastCamHoldState ? 0 : 255, 0, lastCamHoldState ? 255 : 0);
+    CMD_IO.println(lastCamHoldState ? F("OK hold toggle on") : F("OK hold toggle off"));
+  }
+
+  // Short press with 1s cooldown
+  if (camButtonCount == 0) { return; }
+  if ((millis() - lastButtonActionAt) < 1000UL) { return; }
+  lastButtonActionAt = millis();
+
+  CMD_IO.println(F("BOOT button pressed"));
+
+  if (programEnabled) {
+    setProgramEnabled(false);
+    CMD_IO.println(F("OK program off"));
+  } else {
+    beginProgramEnableCountdown();
+  }
+}
+
 void updateDriveTimer() {
   if (driveTimerActive && (long)(millis() - driveStopAt) >= 0) {
     stopMotors();
@@ -1102,6 +1106,8 @@ void updateObstacleAvoid() {
 
   lastAvoidUpdate = millis();
   int distanceMm = readUltrasonicMm();
+  // Basic demo behavior: rotate away from close objects, otherwise move
+  // forward at the currently selected speed.
   if (distanceMm > 0 && distanceMm < 400) {
     velocityController(0, 0, speedPercent, false);
   } else {
@@ -1143,9 +1149,7 @@ void setup() {
 void loop() {
   pollSerial();
   updateStartButton();
-  updateProgramEnableCountdown();
   updateDriveTimer();
   updateObstacleAvoid();
   updateIdleFlash();
 }
-
