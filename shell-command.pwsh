@@ -1,0 +1,15 @@
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+$project = "C:\Users\Emrek\Developer\robo-world-cup-prep\emre-fomo-code"
+
+& $adb wait-for-device
+& $adb push "$project\python\camera.py" `
+  /home/arduino/ArduinoApps/emre-fomo-code/python/camera.py
+
+& $adb push "$project\host\camera_wifi_helper.py" `
+  /home/arduino/ArduinoApps/emre-fomo-code/host/camera_wifi_helper.py
+
+& $adb push "$project\host\install_camera_wifi_helper.sh" `
+  /home/arduino/ArduinoApps/emre-fomo-code/host/install_camera_wifi_helper.sh
+
+& $adb shell sh `
+  /home/arduino/ArduinoApps/emre-fomo-code/host/install_camera_wifi_helper.sh

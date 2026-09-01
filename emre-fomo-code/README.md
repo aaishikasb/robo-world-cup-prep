@@ -374,6 +374,9 @@ App.run(user_loop=lambda: robot.run_program(loop))
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ROBOCUP_CAMERA_URL` | `http://192.168.5.1:81/stream` | MJPEG stream URL |
+| `ROBOCUP_CAMERA_WIFI_AUTO_CONNECT` | `1` | Activate the most recently used saved camera Wi-Fi with NetworkManager before opening the stream; set to `0` to disable |
+| `ROBOCUP_CAMERA_WIFI_PREFIX` | `miniAuto_CAM_` | Prefix used to identify saved camera Wi-Fi profiles |
+| `ROBOCUP_CAMERA_WIFI_HELPER_SOCKET` | `/app/.camera_wifi.sock` | Unix socket used by App Lab to ask the UNO Q host to switch Wi-Fi |
 | `ROBOCUP_SPEED` | `150` | Default motion speed (0–255) |
 | `ROBOCUP_PULSE_MS` | `700` | Default motion duration in milliseconds |
 | `ROBOCUP_PAUSE_SEC` | `0.25` | Pause before and between movements |

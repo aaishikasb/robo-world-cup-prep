@@ -1,6 +1,9 @@
 import base64
 import io
 import os
+import shutil
+import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -24,6 +27,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 CAMERA_URL = os.getenv("ROBOCUP_CAMERA_URL", "http://192.168.5.1:81/stream")
+CAMERA_WIFI_PREFIX = os.getenv("ROBOCUP_CAMERA_WIFI_PREFIX", "miniAuto_CAM_")
+CAMERA_WIFI_AUTO_CONNECT = os.getenv(
+    "ROBOCUP_CAMERA_WIFI_AUTO_CONNECT", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+CAMERA_WIFI_HELPER_SOCKET = os.getenv(
+    "ROBOCUP_CAMERA_WIFI_HELPER_SOCKET", "/app/.camera_wifi.sock"
+)
 
 _python_dir = Path(__file__).resolve().parent
 _eim_files  = list(_python_dir.glob("*.eim"))
@@ -41,6 +51,130 @@ _camera_response = None
 _preview_image: bytes = b""
 _preview_result: dict = {}
 _preview_lock = threading.Lock()
+
+_NMCLI = shutil.which("nmcli")
+if _NMCLI is None and Path("/usr/bin/nmcli").is_file():
+    _NMCLI = "/usr/bin/nmcli"
+
+
+def _run_nmcli(*args: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    if _NMCLI is None:
+        raise FileNotFoundError("nmcli was not found in PATH or at /usr/bin/nmcli")
+    result = subprocess.run(
+        [_NMCLI, *args],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=timeout,
+    )
+    command = " ".join(args)
+    stdout = result.stdout.strip().replace("\n", " | ")
+    stderr = result.stderr.strip().replace("\n", " | ")
+    print(
+        f"[WIFI DEBUG] nmcli {command!s} -> rc={result.returncode}"
+        f" stdout={stdout!r} stderr={stderr!r}"
+    )
+    return result
+
+
+def _request_host_wifi_switch() -> bool:
+    """Ask the UNO Q host helper to switch Wi-Fi from the App Lab container."""
+    print(f"[WIFI DEBUG] requesting host switch via {CAMERA_WIFI_HELPER_SOCKET}")
+    last_error: Exception | None = None
+    for attempt in range(1, 21):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(25)
+                client.connect(CAMERA_WIFI_HELPER_SOCKET)
+                client.sendall((CAMERA_WIFI_PREFIX + "\n").encode("utf-8"))
+                response = client.recv(4096).decode("utf-8", errors="replace").strip()
+            break
+        except (OSError, TimeoutError) as e:
+            last_error = e
+            if attempt < 20:
+                time.sleep(0.5)
+    else:
+        print(f"[WARN] camera Wi-Fi host helper unavailable after 10 s: {last_error}")
+        return False
+
+    if response.startswith("OK "):
+        print(f"[INFO] host switched to camera Wi-Fi: {response[3:]}")
+        return True
+    print(f"[WARN] camera Wi-Fi host helper failed: {response or 'empty response'}")
+    return False
+
+
+def _switch_to_camera_wifi() -> bool:
+    """Activate the most recently used saved miniAuto camera Wi-Fi profile."""
+    print(
+        f"[WIFI DEBUG] auto_connect={CAMERA_WIFI_AUTO_CONNECT} "
+        f"prefix={CAMERA_WIFI_PREFIX!r} nmcli={_NMCLI!r} "
+        f"uid={os.geteuid() if hasattr(os, 'geteuid') else 'unknown'}"
+    )
+    if not CAMERA_WIFI_AUTO_CONNECT:
+        print("[INFO] camera Wi-Fi auto-connect disabled")
+        return False
+    if not CAMERA_WIFI_PREFIX:
+        print("[WARN] camera Wi-Fi prefix is empty")
+        return False
+    if _NMCLI is None:
+        return _request_host_wifi_switch()
+
+    try:
+        active = _run_nmcli("-t", "-f", "ACTIVE,SSID", "device", "wifi")
+        if active.returncode == 0:
+            for line in active.stdout.splitlines():
+                is_active, _, ssid = line.partition(":")
+                if is_active == "yes" and ssid.startswith(CAMERA_WIFI_PREFIX):
+                    print(f"[INFO] already connected to camera Wi-Fi: {ssid}")
+                    return True
+
+        profiles = _run_nmcli(
+            "-t", "--escape", "no", "-f", "UUID,TYPE,TIMESTAMP", "connection", "show"
+        )
+        if profiles.returncode != 0:
+            print(f"[WARN] could not list saved Wi-Fi profiles: {profiles.stderr.strip()}")
+            return False
+
+        candidates: list[tuple[int, str, str]] = []
+        for line in profiles.stdout.splitlines():
+            try:
+                uuid, connection_type, timestamp_text = line.rsplit(":", 2)
+                timestamp = int(timestamp_text or 0)
+            except ValueError:
+                continue
+            if connection_type not in {"802-11-wireless", "wifi"}:
+                continue
+
+            ssid_result = _run_nmcli(
+                "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid
+            )
+            ssid = ssid_result.stdout.strip()
+            if ssid_result.returncode == 0 and ssid.startswith(CAMERA_WIFI_PREFIX):
+                print(
+                    f"[WIFI DEBUG] saved camera profile: "
+                    f"ssid={ssid!r} uuid={uuid} timestamp={timestamp}"
+                )
+                candidates.append((timestamp, uuid, ssid))
+
+        if not candidates:
+            print(f"[WARN] no saved camera Wi-Fi matching {CAMERA_WIFI_PREFIX}* was found")
+            return False
+
+        _, uuid, ssid = max(candidates)
+        print(f"[INFO] switching Wi-Fi to camera: {ssid}")
+        connected = _run_nmcli("--wait", "15", "connection", "up", "uuid", uuid, timeout=20)
+        if connected.returncode != 0:
+            detail = connected.stderr.strip() or connected.stdout.strip()
+            print(f"[WARN] could not connect to camera Wi-Fi {ssid}: {detail}")
+            return False
+
+        print(f"[INFO] connected to camera Wi-Fi: {ssid}")
+        _run_nmcli("-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS", "device", "show")
+        return True
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[WARN] camera Wi-Fi auto-connect failed: {e}")
+        return False
 
 
 def _camera_reader() -> None:
@@ -105,6 +239,7 @@ def get_preview_image() -> dict:
 
 
 def _start_camera() -> None:
+    _switch_to_camera_wifi()
     threading.Thread(target=_camera_reader, daemon=True).start()
 
 
