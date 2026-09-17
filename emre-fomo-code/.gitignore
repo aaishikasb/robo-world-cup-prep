@@ -13,3 +13,7 @@ __pycache__/
 *.pb
 *.engine
 *.safetensors
+
+docs
+camera
+.agents

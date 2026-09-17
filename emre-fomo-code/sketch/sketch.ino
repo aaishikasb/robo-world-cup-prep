@@ -62,10 +62,11 @@ uint8_t speedPercent = 55;
 bool obstacleAvoidEnabled = false;
 bool programEnabled = false;
 bool programEnablePending = false;
+unsigned long programEnableStartedAt = 0;
+bool programEnableYellow = false;
 int lastCamHoldState = -1;
 unsigned long lastIdleFlashAt = 0;
 bool idleFlashState = false;
-unsigned long lastButtonActionAt = 0;
 unsigned long lastAvoidUpdate = 0;
 String commandBuffer;
 unsigned long lastCommandByteAt = 0;
@@ -1045,16 +1046,26 @@ void setProgramEnabled(bool enabled) {
 
 void beginProgramEnableCountdown() {
   stopMotors();
+  programEnablePending = true;
+  programEnableStartedAt = millis();
+  programEnableYellow = false;
   setUltrasonicColor(255, 0, 0);   // red
-  delay(600);
-  setUltrasonicColor(255, 180, 0); // yellow
-  delay(600);
-  setProgramEnabled(true);          // green solid — program is now live
-  CMD_IO.println(F("OK program on"));
+}
+
+void updateProgramEnableCountdown() {
+  if (!programEnablePending) { return; }
+  unsigned long elapsed = millis() - programEnableStartedAt;
+  if (elapsed >= 1200UL) {
+    setProgramEnabled(true);       // green solid — program is now live
+    CMD_IO.println(F("OK program on"));
+  } else if (elapsed >= 600UL && !programEnableYellow) {
+    programEnableYellow = true;
+    setUltrasonicColor(255, 180, 0); // yellow
+  }
 }
 
 void updateIdleFlash() {
-  if (programEnabled) { return; }
+  if (programEnabled || programEnablePending) { return; }
   unsigned long now = millis();
   if (now - lastIdleFlashAt >= 1500) {
     lastIdleFlashAt = now;
@@ -1078,14 +1089,13 @@ void updateStartButton() {
     CMD_IO.println(lastCamHoldState ? F("OK hold toggle on") : F("OK hold toggle off"));
   }
 
-  // Short press with 1s cooldown
+  // The camera already debounces short presses and clears each event on read.
+  // Never discard an acknowledged event behind a second cooldown here.
   if (camButtonCount == 0) { return; }
-  if ((millis() - lastButtonActionAt) < 1000UL) { return; }
-  lastButtonActionAt = millis();
 
   CMD_IO.println(F("BOOT button pressed"));
 
-  if (programEnabled) {
+  if (programEnabled || programEnablePending) {
     setProgramEnabled(false);
     CMD_IO.println(F("OK program off"));
   } else {
@@ -1149,6 +1159,7 @@ void setup() {
 void loop() {
   pollSerial();
   updateStartButton();
+  updateProgramEnableCountdown();
   updateDriveTimer();
   updateObstacleAvoid();
   updateIdleFlash();

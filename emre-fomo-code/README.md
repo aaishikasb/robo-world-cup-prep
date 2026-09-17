@@ -293,6 +293,31 @@ The CAM button on the ESP32-S3 camera module controls the program:
 - **Short press**: toggle program on/off. LED signals: red → yellow → green (starting), off (stopped).
 - **Hold 5 seconds**: toggle team color. Onboard RGB: red = RED team, blue = BLUE team.
 
+Video travels over Wi-Fi; button events travel over the camera's wired I2C
+connection at `0x79`. The camera debounces short presses and clears each event
+when the UNO Q reads it. The UNO Q accepts every received short-press event
+without an additional cooldown. A short press during the 1.2-second red/yellow
+startup countdown cancels startup. The countdown is nonblocking, so button
+polling and motor deadline checks continue during it. A short press is reported
+on release; a five-second hold changes team color rather than issuing a stop.
+
+To validate this firmware change with wheels raised and power disconnect within
+reach:
+
+1. Start the app and briefly press/release BOOT. Press/release it again during
+   red (first 600 ms). Expect `OK program off`, no green, and no movement.
+2. Repeat, cancelling during yellow (600–1200 ms). Wait at least two seconds;
+   startup must stay cancelled.
+3. Start normally and press/release BOOT while the routine moves. Expect
+   `OK program off` and stopped wheels. Repeat with two distinct short presses
+   less than one second apart: stop, then start/cancel must each be received.
+4. While stopped, hold BOOT for five seconds. Expect one team-color toggle and
+   no startup on release.
+
+This change removes the button cooldown and blocking startup countdown; it does
+not yet address other blocking diagnostics, I2C bus failures, or Bridge startup
+timeouts.
+
 ```python
 from robot_client import MiniAutoRobot
 from arduino.app_utils import App
